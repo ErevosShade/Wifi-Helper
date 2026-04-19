@@ -49,27 +49,139 @@ def get_all_wifi_names(cfg):
 
 # ── WiFi detection ────────────────────────────────────────
 def get_current_ssid():
+    """
+    Try multiple methods to get the current WiFi SSID.
+    Some Windows machines / locales fail with one method but not others.
+    """
+
+    # Method 1: netsh (standard, but can fail on non-English Windows)
     try:
         result = subprocess.check_output(
             ["netsh", "wlan", "show", "interfaces"],
             text=True,
+            encoding="utf-8",
+            errors="replace",
             creationflags=subprocess.CREATE_NO_WINDOW
         )
         for line in result.splitlines():
-            if "SSID" in line and "BSSID" not in line:
-                return line.split(":", 1)[1].strip()
+            stripped = line.strip()
+            # Match "SSID" but not "BSSID" — works on English Windows
+            if stripped.startswith("SSID") and "BSSID" not in stripped:
+                parts = stripped.split(":", 1)
+                if len(parts) == 2:
+                    ssid = parts[1].strip()
+                    if ssid:
+                        return ssid
     except:
         pass
+
+    # Method 2: netsh with cp1252 encoding (common on Indian/non-UTF8 Windows)
+    try:
+        result = subprocess.check_output(
+            ["netsh", "wlan", "show", "interfaces"],
+            creationflags=subprocess.CREATE_NO_WINDOW
+        )
+        result = result.decode("cp1252", errors="replace")
+        for line in result.splitlines():
+            stripped = line.strip()
+            if "SSID" in stripped and "BSSID" not in stripped and ":" in stripped:
+                # Also handles translated labels (Hindi/regional Windows)
+                parts = stripped.split(":", 1)
+                if len(parts) == 2:
+                    ssid = parts[1].strip()
+                    if ssid:
+                        return ssid
+    except:
+        pass
+
+    # Method 3: PowerShell fallback — works on all modern Windows regardless of locale
+    try:
+        ps_cmd = (
+            "(Get-NetConnectionProfile | "
+            "Where-Object { $_.InterfaceAlias -like '*Wi*' -or $_.InterfaceAlias -like '*Wireless*' } | "
+            "Select-Object -ExpandProperty Name -First 1)"
+        )
+        result = subprocess.check_output(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=8
+        ).strip()
+        if result and result != "":
+            return result
+    except:
+        pass
+
+    # Method 4: PowerShell via WiFi adapter profile name
+    try:
+        ps_cmd = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "[System.Windows.Forms.SystemInformation]::ComputerName | Out-Null; "
+            "$wlan = [Windows.Networking.Connectivity.NetworkInformation, Windows, ContentType=WindowsRuntime]; "
+            "$null"
+        )
+        # Simpler PowerShell: get SSID via netsh profile trick
+        ps_cmd2 = (
+            "netsh wlan show interfaces | "
+            "Select-String 'SSID' | "
+            "Where-Object { $_ -notmatch 'BSSID' } | "
+            "Select-Object -First 1 | "
+            "ForEach-Object { ($_ -split ':',2)[1].Trim() }"
+        )
+        result = subprocess.check_output(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd2],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=8
+        ).strip()
+        if result:
+            return result
+    except:
+        pass
+
+    # Method 5: wmic (older Windows, works even when netsh is broken)
+    try:
+        result = subprocess.check_output(
+            ["wmic", "path", "Win32_NetworkAdapter",
+             "where", "NetConnectionStatus=2",
+             "get", "NetConnectionID"],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=8
+        )
+        # wmic won't give SSID but helps confirm WiFi is connected at least
+        # Fall through — not useful for SSID, but logged for debug
+    except:
+        pass
+
     return ""
 
+
 def on_correct_wifi(ssid_list):
-    current = get_current_ssid().lower()
+    """
+    Returns the matched SSID name if current WiFi matches any in ssid_list.
+    Uses case-insensitive comparison and partial match for robustness.
+    """
+    current = get_current_ssid()
     if not current:
         return None
+    current_lower = current.lower().strip()
     for ssid in ssid_list:
-        if ssid.lower() == current or ssid.lower() in current:
+        ssid_lower = ssid.lower().strip()
+        # Exact match (case-insensitive)
+        if ssid_lower == current_lower:
+            return ssid
+        # Partial match: e.g. "Hostel-1" in "BIT-Hostel-1" or vice versa
+        if ssid_lower in current_lower or current_lower in ssid_lower:
             return ssid
     return None
+
 
 def is_internet_alive():
     try:
@@ -82,9 +194,11 @@ def is_internet_alive():
         r = requests.get("http://connectivitycheck.gstatic.com/generate_204", timeout=5)
         if r.status_code == 204:
             return True
+        # Sophos portal also redirects, so status 200/302 with Sophos content = no internet
     except:
         pass
     return False
+
 
 def confirm_disconnected():
     """Check twice with 5s gap to avoid false session-expired alerts."""
@@ -307,6 +421,29 @@ def open_settings(cfg=None, on_save=None):
 
         # Also allow pressing Enter in the custom field
         custom_entry.bind("<Return>", lambda e: add_custom())
+
+        # ── Detect current WiFi helper ────────────────────
+        def auto_detect_wifi():
+            detected = get_current_ssid()
+            if detected:
+                # Check if it's already in the list
+                if detected not in combo["values"]:
+                    if detected not in custom_wifis:
+                        custom_wifis.append(detected)
+                    new_vals = list(combo["values"]) + [detected]
+                    combo["values"] = new_vals
+                selected_var.set(detected)
+                detect_btn.config(text=f"✓ Detected: {detected}", fg="#22c55e")
+            else:
+                detect_btn.config(text="✗ Could not detect WiFi", fg="#ef4444")
+
+        detect_btn = tk.Button(
+            pad, text="⟳ Auto-detect current WiFi", command=auto_detect_wifi,
+            bg="#0f172a", fg="#64748b", font=("Segoe UI", 8),
+            relief="flat", cursor="hand2", bd=0,
+            activebackground="#0f172a", activeforeground="#94a3b8"
+        )
+        detect_btn.pack(anchor="w", pady=(4, 0))
 
         # ── Error + Save ──────────────────────────────────
         err_lbl = tk.Label(root, text="", bg="#0f172a",
