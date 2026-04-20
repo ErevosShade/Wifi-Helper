@@ -422,28 +422,6 @@ def open_settings(cfg=None, on_save=None):
         # Also allow pressing Enter in the custom field
         custom_entry.bind("<Return>", lambda e: add_custom())
 
-        # ── Alerts toggle ─────────────────────────────────
-        tk.Label(pad, text="", bg="#0f172a").pack()
-        tk.Label(pad, text="BEHAVIOUR", bg="#0f172a",
-                 fg="#3b82f6", font=("Segoe UI", 8, "bold")).pack(anchor="w", pady=(8, 4))
-
-        alerts_var = tk.BooleanVar(value=cfg.get("alerts", True) if cfg else True)
-
-        row = tk.Frame(pad, bg="#0f172a")
-        row.pack(fill="x", pady=(0, 2))
-        tk.Checkbutton(
-            row, variable=alerts_var,
-            bg="#0f172a", activebackground="#0f172a",
-            selectcolor="#1e293b", bd=0, highlightthickness=0, cursor="hand2"
-        ).pack(side="left")
-        tk.Label(row, text="Show popup alerts when session expires",
-                 bg="#0f172a", fg="#cbd5e1", font=("Segoe UI", 9)).pack(side="left")
-
-        tk.Label(pad,
-                 text="When OFF — icon turns red silently. Reconnect manually from tray.",
-                 bg="#0f172a", fg="#475569", font=("Segoe UI", 7),
-                 wraplength=360, justify="left").pack(anchor="w", pady=(0, 6))
-
         # ── Detect current WiFi helper ────────────────────
         def auto_detect_wifi():
             detected = get_current_ssid()
@@ -489,7 +467,6 @@ def open_settings(cfg=None, on_save=None):
                 "password":     pwd,
                 "ssids":        [ssid],
                 "custom_wifis": custom_wifis,
-                "alerts":       alerts_var.get(),
             }
             save_config(data)
             if on_save:
