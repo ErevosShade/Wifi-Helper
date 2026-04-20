@@ -422,6 +422,28 @@ def open_settings(cfg=None, on_save=None):
         # Also allow pressing Enter in the custom field
         custom_entry.bind("<Return>", lambda e: add_custom())
 
+        # ── Alerts toggle ─────────────────────────────────
+        tk.Label(pad, text="", bg="#0f172a").pack()
+        tk.Label(pad, text="BEHAVIOUR", bg="#0f172a",
+                 fg="#3b82f6", font=("Segoe UI", 8, "bold")).pack(anchor="w", pady=(8, 4))
+
+        alerts_var = tk.BooleanVar(value=cfg.get("alerts", True) if cfg else True)
+
+        row = tk.Frame(pad, bg="#0f172a")
+        row.pack(fill="x", pady=(0, 2))
+        tk.Checkbutton(
+            row, variable=alerts_var,
+            bg="#0f172a", activebackground="#0f172a",
+            selectcolor="#1e293b", bd=0, highlightthickness=0, cursor="hand2"
+        ).pack(side="left")
+        tk.Label(row, text="Show popup alerts when session expires",
+                 bg="#0f172a", fg="#cbd5e1", font=("Segoe UI", 9)).pack(side="left")
+
+        tk.Label(pad,
+                 text="When OFF — icon turns red silently. Reconnect manually from tray.",
+                 bg="#0f172a", fg="#475569", font=("Segoe UI", 7),
+                 wraplength=360, justify="left").pack(anchor="w", pady=(0, 6))
+
         # ── Detect current WiFi helper ────────────────────
         def auto_detect_wifi():
             detected = get_current_ssid()
@@ -466,7 +488,8 @@ def open_settings(cfg=None, on_save=None):
                 "username":     user,
                 "password":     pwd,
                 "ssids":        [ssid],
-                "custom_wifis": custom_wifis,   # persisted for future opens
+                "custom_wifis": custom_wifis,
+                "alerts":       alerts_var.get(),
             }
             save_config(data)
             if on_save:
@@ -541,22 +564,30 @@ def monitor(icon, cfg_holder):
         on_wifi = matched is not None
         connected = is_internet_alive() if on_wifi else False
 
+        alerts_on = cfg.get("alerts", True)
+
         # Just joined college WiFi
         if on_wifi and not prev_on_wifi and not popup_active:
-            popup_active = True
-            icon.icon  = ICON_RED
-            icon.title = "BIT WiFi: Login needed"
-            if ask("BIT WiFi Helper",
-                   f"You joined {matched}!\nLogin to Sophos now?"):
-                do_login(cfg)
-                time.sleep(4)
-                if is_internet_alive():
-                    icon.icon  = ICON_GREEN
-                    icon.title = f"BIT WiFi: Connected ✓  ({matched})"
-                else:
-                    icon.icon  = ICON_YELLOW
-                    icon.title = "BIT WiFi: Verifying login..."
-            popup_active = False
+            if alerts_on:
+                # Ask user before logging in
+                popup_active = True
+                icon.icon  = ICON_RED
+                icon.title = "BIT WiFi: Login needed"
+                if ask("BIT WiFi Helper",
+                       f"You joined {matched}!\nLogin to Sophos now?"):
+                    do_login(cfg)
+                    time.sleep(4)
+                    if is_internet_alive():
+                        icon.icon  = ICON_GREEN
+                        icon.title = f"BIT WiFi: Connected ✓  ({matched})"
+                    else:
+                        icon.icon  = ICON_YELLOW
+                        icon.title = "BIT WiFi: Verifying login..."
+                popup_active = False
+            else:
+                # Silent — just show red, user reconnects manually from tray
+                icon.icon  = ICON_RED
+                icon.title = f"BIT WiFi: Login needed — click tray to reconnect ({matched})"
 
         # Possible drop — confirm twice before alerting
         elif on_wifi and prev_connected and not connected and not popup_active:
@@ -564,18 +595,24 @@ def monitor(icon, cfg_holder):
             icon.icon  = ICON_YELLOW
             icon.title = "BIT WiFi: Checking..."
             if confirm_disconnected():
-                icon.icon  = ICON_RED
-                icon.title = "BIT WiFi: Session expired!"
-                if ask("BIT WiFi — Session Expired",
-                       "Your Sophos session has expired.\nReconnect now?"):
-                    do_login(cfg)
-                    time.sleep(4)
-                    if is_internet_alive():
-                        icon.icon  = ICON_GREEN
-                        icon.title = f"BIT WiFi: Reconnected ✓  ({matched})"
-                    else:
-                        icon.icon  = ICON_YELLOW
-                        icon.title = "BIT WiFi: Verifying..."
+                if alerts_on:
+                    # Ask user before reconnecting
+                    icon.icon  = ICON_RED
+                    icon.title = "BIT WiFi: Session expired!"
+                    if ask("BIT WiFi — Session Expired",
+                           "Your Sophos session has expired.\nReconnect now?"):
+                        do_login(cfg)
+                        time.sleep(4)
+                        if is_internet_alive():
+                            icon.icon  = ICON_GREEN
+                            icon.title = f"BIT WiFi: Reconnected ✓  ({matched})"
+                        else:
+                            icon.icon  = ICON_YELLOW
+                            icon.title = "BIT WiFi: Verifying..."
+                else:
+                    # Silent — just turn red, user reconnects manually from tray
+                    icon.icon  = ICON_RED
+                    icon.title = "BIT WiFi: Session expired — click tray to reconnect"
             else:
                 icon.icon  = ICON_GREEN
                 icon.title = f"BIT WiFi: Connected ✓  ({matched})"
@@ -627,12 +664,33 @@ def main():
         i.stop()
         sys.exit()
 
+    def on_toggle_alerts(i, it):
+        cfg = cfg_holder[0]
+        if not cfg:
+            return
+        # Flip the alerts value
+        cfg["alerts"] = not cfg.get("alerts", True)
+        save_config(cfg)
+        # Update tray title to reflect new state
+        state = "ON" if cfg["alerts"] else "OFF"
+        i.title = f"BIT WiFi Helper  •  Alerts {state}  •  Made by Erevos"
+
+    def alerts_checked(it):
+        cfg = cfg_holder[0]
+        return cfg.get("alerts", True) if cfg else True
+
     icon = pystray.Icon(
         "bit_wifi", ICON_GRAY,
         "BIT WiFi Helper  •  Made by Erevos",
         menu=pystray.Menu(
             pystray.MenuItem("Reconnect now",               on_reconnect),
             pystray.MenuItem("Sign out",                    on_signout),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(
+                "Popup alerts",
+                on_toggle_alerts,
+                checked=alerts_checked   # shows checkmark when ON
+            ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Settings / Edit credentials", on_settings),
             pystray.MenuItem("About",                       on_about),
